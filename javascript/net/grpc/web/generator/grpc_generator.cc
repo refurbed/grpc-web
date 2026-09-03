@@ -540,8 +540,18 @@ void PrintClosureDependencies(Printer* printer, const FileDescriptor* file) {
 void PrintCommonJsMessagesDeps(Printer* printer, const FileDescriptor* file) {
   std::map<string, string> vars;
 
-  for (int i = 0; i < file->dependency_count(); i++) {
-    const string& name = file->dependency(i)->name();
+  // Only require the .proto files that actually provide a service method's
+  // input/output message type -- these are the only files JSMessageType()
+  // ends up aliasing below. Requiring every direct proto dependency instead
+  // (regardless of use) produces a dangling import for annotation-only
+  // dependencies such as google/api/annotations.proto, brought in solely for
+  // service-method options.
+  std::set<string> referenced_files;
+  for (const auto& entry : GetAllMessages(file)) {
+    const FileDescriptor* dep_file = entry.second->file();
+    if (dep_file != file) referenced_files.insert(dep_file->name());
+  }
+  for (const string& name : referenced_files) {
     vars["alias"] = ModuleAlias(name);
     vars["dep_filename"] = GetRootPath(file->name(), name) + StripProto(name);
     // we need to give each cross-file import an alias
