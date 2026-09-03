@@ -854,6 +854,35 @@ void PrintProtoDtsOneofCase(Printer* printer, const OneofDescriptor* desc) {
   printer->Print("}\n");
 }
 
+// Collects the set of dependency .proto filenames whose message or enum
+// types are actually referenced (directly or via nested types) by fields of
+// desc. Used to avoid emitting a `.d.ts` import for every direct proto
+// dependency regardless of use -- e.g. annotation-only imports like
+// google/api/annotations.proto, brought in solely for service-method
+// options, otherwise produce a dangling import with no corresponding symbol
+// use.
+void CollectDtsReferencedFiles(const Descriptor* desc,
+                               const FileDescriptor* file,
+                               std::set<string>* referenced_files) {
+  for (int i = 0; i < desc->field_count(); i++) {
+    const FieldDescriptor* field = desc->field(i);
+    if (field->type() == FieldDescriptor::TYPE_MESSAGE) {
+      const FileDescriptor* dep_file = field->message_type()->file();
+      if (dep_file != file) {
+        referenced_files->insert(dep_file->name());
+      }
+    } else if (field->type() == FieldDescriptor::TYPE_ENUM) {
+      const FileDescriptor* dep_file = field->enum_type()->file();
+      if (dep_file != file) {
+        referenced_files->insert(dep_file->name());
+      }
+    }
+  }
+  for (int i = 0; i < desc->nested_type_count(); i++) {
+    CollectDtsReferencedFiles(desc->nested_type(i), file, referenced_files);
+  }
+}
+
 void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
                           const FileDescriptor* file) {
   const string& class_name = desc->name();
@@ -988,8 +1017,13 @@ void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
 void PrintProtoDtsFile(Printer* printer, const FileDescriptor* file) {
   printer->Print("import * as jspb from 'google-protobuf'\n\n");
 
-  for (int i = 0; i < file->dependency_count(); i++) {
-    const string& proto_filename = file->dependency(i)->name();
+  std::set<string> referenced_files;
+  for (int i = 0; i < file->message_type_count(); i++) {
+    CollectDtsReferencedFiles(file->message_type(i), file, &referenced_files);
+  }
+  for (std::set<string>::iterator it = referenced_files.begin();
+       it != referenced_files.end(); ++it) {
+    const string& proto_filename = *it;
     // We need to give each cross-file import an alias.
     printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
                    "alias", ModuleAlias(proto_filename),
