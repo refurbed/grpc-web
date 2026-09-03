@@ -1,0 +1,73 @@
+name: Build protoc-gen-grpc-web
+
+# Builds the plugin with bazel, using the protobuf version pinned in
+# MODULE.bazel, and uploads it as a workflow artifact plus, on a release, as a
+# release asset.
+
+on:
+  push:
+    branches-ignore:
+      - master
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to upload assets to
+        required: false
+        type: string
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runs-on: ubuntu-22.04
+          - platform: darwin-arm64
+            runs-on: macos-14
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build plugin
+        run: bazel build //javascript/net/grpc/web/generator:protoc-gen-grpc-web
+
+      - name: Verify binary
+        run: file bazel-bin/javascript/net/grpc/web/generator/protoc-gen-grpc-web
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp bazel-bin/javascript/net/grpc/web/generator/protoc-gen-grpc-web dist/protoc-gen-grpc-web
+          tar -C dist -czf "protoc-gen-grpc-web-${{ matrix.platform }}.tar.gz" protoc-gen-grpc-web
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-grpc-web-${{ matrix.platform }}
+          path: protoc-gen-grpc-web-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: ${{ env.RELEASE_TAG != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mv "protoc-gen-grpc-web-${{ matrix.platform }}.tar.gz" \
+            "protoc-gen-grpc-web-${RELEASE_TAG}-${{ matrix.platform }}.tar.gz"
+          gh release upload "$RELEASE_TAG" \
+            "protoc-gen-grpc-web-${RELEASE_TAG}-${{ matrix.platform }}.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" --clobber
