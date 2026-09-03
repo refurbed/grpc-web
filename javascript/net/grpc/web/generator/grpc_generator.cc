@@ -431,10 +431,18 @@ string GetNestedMessageName(const Descriptor* descriptor) {
   return result;
 }
 
+// Whether the given .proto filename is a well-known type, i.e. one whose
+// generated code is resolved from the 'google-protobuf' npm package rather than
+// emitted alongside our own output. That package ships CommonJS, so ES6 output
+// has to import those modules differently (see PrintES6Imports).
+bool IsWellKnownTypeFile(const string& filename) {
+  return HasPrefixString(filename, "google/protobuf");
+}
+
 // Given a filename like foo/bar/baz.proto, returns the root directory
 // path ../../
 string GetRootPath(const string& from_filename, const string& to_filename) {
-  if (HasPrefixString(to_filename, "google/protobuf")) {
+  if (IsWellKnownTypeFile(to_filename)) {
     // Well-known types (.proto files in the google/protobuf directory) are
     // assumed to come from the 'google-protobuf' npm package.  We may want to
     // generalize this exception later by letting others put generated code in
@@ -583,7 +591,20 @@ void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
     }
     imports.insert(dep_filename);
     // We need to give each cross-file import an alias.
-    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
+    //
+    // The well-known types resolve to the 'google-protobuf' npm package (see
+    // GetRootPath), which ships CommonJS. Those modules publish their symbols
+    // with `goog.object.extend(exports, ...)`, which Node's cjs-module-lexer
+    // cannot detect statically, so a namespace import of them yields a
+    // namespace carrying only `default` and every `$alias$.Empty` reads as
+    // undefined. Since the generated references sit in class-field
+    // initialisers, that surfaces when a service client is constructed. The
+    // default binding maps to `module.exports` under both Node's ESM/CJS
+    // interop and bundler interop, so use it for those. The other imports are
+    // generated ES modules, so they keep the namespace import.
+    printer->Print(IsWellKnownTypeFile(proto_filename)
+                       ? "import $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n"
+                       : "import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
                    "alias", ModuleAlias(proto_filename),
                    "dep_filename", dep_filename,
                    "proto_filename", proto_filename);
